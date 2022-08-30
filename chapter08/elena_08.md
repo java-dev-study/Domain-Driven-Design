@@ -57,3 +57,55 @@ Order order = entityManager.find(Order.class, orderNo, LockModeType.PESSIMISTIC_
 ---
 
 **3. 비선점 잠금**
+- 동시에 접근하는 것을 막는 대신 변경한 데이터를 실제 DBMS에 반영하는 시점에 변경 가능 여부를 확인하는 방식
+- `비선점 잠금`을 구현하려면 애그리거트에 버전으로 사용할 숫자 타입 프로퍼티 추가
+- 애그리거트를 수정할 때마다 버전으로 사용할 프로퍼티 값이 1씩 증가\
+→ `UPDATE aggtable SET version = version + 1, colx = ?, coly = ? WHERE aggid = ? and version = 현재버전`
+- JPA : 버전을 이용한 `비선점 잠금` 기능 지원\
+→ 버전으로 사용할 필드에 `@Version` Annotaion 작성 & 매핑되는 테이블에 버전을 저장할 컬럼 추가
+```java
+@Entity
+@Table(name = "purchase_order")
+@Access(AccessType.FIELD)
+public class Order {
+ @EmbeddedId
+ private OrderNo number;
+ 
+ @Version
+ private long version;
+ ...
+}
+```
+
+└ 엩니니가 변경되어 UPDATE 쿼리를 실행할 때 `@Version`에 명시한 필드를 이용해서 `비선점 잠금 쿼리`를 실행
+
+- `응용 서비스`는 버전에 대해 알 필요 X
+- 쿼리 실행 결과로 수정된 행의 개수가 0이면 이미 앞서 데이터가 수정된 것\
+→ 트랜잭션이 충돌한 것이므로 트랜잭션 종료 시점에 Exception 발생
+- `표현 영역` 코드는 이 Exception이 발생했는지에 따라 트랜잭션 충돌이 일어났는지 확인 가능
+- 사용자가 전송한 버전과 애그리거트 버전이 동일한 경우에만 애그리거트 수정 기능을 수행하도록 하여 트랜잭션 충돌 문제 해소 가능
+- `비선점 잠금 방식`을 여러 트랜잭션으로 확장하려면 애그리거트 정보를 뷰로 보여줄 때 버전 정보도 함께 사용자 화면에 전달
+- `표현 계층`은 버전 충돌 Exception이 발생하면 버전 충돌을 사용자에게 알려 사용자가 알맞은 후속 처리를 할 수 있도록 함
+
+`cf. Spring Framework : OptimisticLockingFailureException / 응용 서비스 코드 : VersionConflictException`
+
+1. 강제 버전 증가
+- 애그리거트 내에 어떤 구성요소의 상태가 바뀌면 루트 애그리거트의 버전 값이 증가해야 `비선점 잠금`이 올바르게 동작한다는 점에서\
+`JPA`는 애그리거트 관점에서 문제가 됨
+- `EntityManager#find()` 메서드로 문제 처리 가능
+
+---
+
+**4. 오프라인 선점 잠금**
+- 한 트랜잭션 범위에서만 적용되는 `선점 잠금 방식`이나 나중에 버전 충돌을 확인하는 `비선점 잠금 방식`은\
+다른 사용자가 수정 중일 때 수정 자체를 못 하도록 막는 기능을 구현할 수 없음\
+→ 이때 필요한 것이 `오프라인 선점 잠금 방식(Offliine Pessimistic Lock)`
+- 여러 트랜잭션에 걸쳐 동시 변경을 막음
+
+1. 오프라인 선점 잠금을 위한 LockManager 인터페이스와 관련 클래스
+- `오프라인 선점 작금` : 잠금 선점 시도, 잠금 확인, 잠금 해제, 잠금 유효시간 연장 기능 必
+- `LockManager` : 위 기능을 위한 인터페이스
+- 잠금을 선점하는 데 실패하면 `LockException`이 발생
+
+2. DB를 이용한 LockManager 구현
+- type과 id column을 PK로 지정해 동시에 두 사용자가 특정 타입 데이터에 대한 잠금을 구하는 것을 방지
